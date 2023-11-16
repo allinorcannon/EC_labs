@@ -9,7 +9,7 @@ import numpy as np
 from joblib import Parallel, delayed
 
 MAX_DIST = 2147483647
-# random.seed(100)
+
 
 def create_distance_matrix(df):
     x = df['x'].values
@@ -71,11 +71,18 @@ class Delta:
       self.delta_value = delta_value
 
   def create_path(self, path):
-      if self.delta_type == 'inter':
-          index_of_old_node, new_value = self.values
-          modified_path = copy.deepcopy(path)
-          modified_path[index_of_old_node] = new_value
-          return modified_path
+      if self.delta_type == 'interpre':
+          new_path = copy.deepcopy(path)
+          pivot, new_node = self.values
+          idx_to_remove = (pivot - 1) % len(path)
+          new_path[idx_to_remove] = new_node
+          return new_path
+      elif self.delta_type == 'interpost':
+          new_path = copy.deepcopy(path)
+          pivot, new_node = self.values
+          idx_to_remove = (pivot + 1) % len(path)
+          new_path[idx_to_remove] = new_node
+          return new_path
       elif self.delta_type == 'edges':
           n1, n2 = self.values
           if n1 < n2:
@@ -116,20 +123,26 @@ def get_candidate_edges(pivot, neighbour, path, distance_matrix, intra_type = 'e
     delta = Delta(delta_value, 'edges', (index1, index2))
     return delta
 
-def get_candidate_nodes(pivot, neighbour, path, distance_matrix, costs):
-    index_of_old_node, new_node = pivot, neighbour
+def get_candidate_nodes(pivot, new_node, path, distance_matrix, costs, inter_type):
     delta_value = 0
 
-    prev = int(path[(index_of_old_node - 1) % len(path)])
-    next = int(path[(index_of_old_node + 1) % len(path)])
+    if inter_type == 'pre':
+        idx_remove_node = (pivot - 1) % len(path)
+        prev = int(path[idx_remove_node])
+        new_prev_node = int(path[(pivot - 2) % len(path)])
+        old_dist = distance_matrix[new_prev_node, prev] + distance_matrix[prev, path[pivot]]
+        new_dist = distance_matrix[new_prev_node, new_node] + distance_matrix[new_node, path[pivot]]
+    else:
+        idx_remove_node = (pivot + 1) % len(path)
+        next = int(path[idx_remove_node])
+        new_next_node = int(path[(pivot + 2) % len(path)])
+        old_dist = distance_matrix[path[pivot], next] + distance_matrix[next, new_next_node]
+        new_dist = distance_matrix[path[pivot], new_node] + distance_matrix[new_node, new_next_node]
 
-    old_dist = distance_matrix[prev, path[index_of_old_node]]               + distance_matrix[path[index_of_old_node], next]
-    new_dist = distance_matrix[prev, new_node]               + distance_matrix[new_node, next]
     delta_value += new_dist - old_dist  # lower is better
+    delta_value += costs[new_node] - costs[path[idx_remove_node]]  # lower is better
 
-    delta_value += costs[new_node] - costs[path[index_of_old_node]]  # lower is better
-
-    delta = Delta(delta_value, 'inter', (index_of_old_node, new_node))
+    delta = Delta(delta_value, 'inter' + inter_type, (pivot, new_node))
 
     return delta
 
@@ -140,7 +153,10 @@ def candidate_intra(pivot, neighbour, path, distance_matrix, costs):
     ]
 
 def candidate_inter(pivot, neighbour, path, distance_matrix, costs):
-    return get_candidate_nodes(pivot, neighbour, path, distance_matrix, costs)
+    return [
+        get_candidate_nodes(pivot, neighbour, path, distance_matrix, costs, inter_type='pre'),
+        get_candidate_nodes(pivot, neighbour, path, distance_matrix, costs, inter_type='post')
+    ]
 
 def get_candidate_neighbourhood(
     path,
@@ -165,10 +181,13 @@ def get_candidate_neighbourhood(
                 neighbourhood.extend(candidate_intra(node_indices[vertex_n1], node_indices[vertex_n2], path, distance_matrix, costs))
             else:
                 # Candidate Nodes
-                # 0 1 2 3 4 5 6 7 8
-                # n1 = 1 n2 = 9
-                # 0 9 2 3 4 5 6 7 8
-                neighbourhood.append(candidate_inter(node_indices[vertex_n1], vertex_n2, path, distance_matrix, costs))
+                # path: 0 1 2 3 4 5 6
+                # n1 = 2 n2 = 9
+                # Option #1
+                #       0 1 2 9 4 5 6
+                # Option #2
+                #       0 9 2 3 4 5 6
+                neighbourhood.extend(candidate_inter(node_indices[vertex_n1], vertex_n2, path, distance_matrix, costs))
     neighbourhood = [i for i in neighbourhood if i is not None]
     return np.array(neighbourhood)
 
@@ -209,7 +228,7 @@ def evaluate_solution(filename, initial, costs, distance_matrix, no_candidates=1
 
 if __name__ == "__main__":
     test_start = time.time()
-    files = ['TSPA.csv', 'TSPB.csv', 'TSPC.csv', 'TSPD.csv']
+    files = ['TSPA.csv', 'TSPD.csv', 'TSPB.csv', 'TSPC.csv']
     for filename in files:
         prefix = "Candidates"
         mapping_out_files= {
@@ -219,7 +238,6 @@ if __name__ == "__main__":
             'TSPD.csv' : f'{prefix}_TSPD_out.csv'
         }
         nodes, costs, distance_matrix = read_data(filename)
-        
         results = Parallel(n_jobs=-1)(delayed(evaluate_solution)(filename, None, costs, distance_matrix)
                                     for i in range(200)
                                     )
